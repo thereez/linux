@@ -20,8 +20,53 @@ sem_t sem;
 struct
 {
 	pid_t pid;
+
 }
 g_proc[N];
+
+int GetIndex(pid_t pid, int p_number)
+{
+	for (int i = 0; i < p_number; i++)
+	{
+		if (g_proc[i].pid == pid)
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+void WaitForChildrenToTerminate(int p_number)
+{
+	int counter = p_number;
+	int fd = open("log.txt", O_CREAT | O_RDWR, S_IRWXU);
+	pid_t pid;
+	char buf[64];
+	int status;
+
+	while (1)
+	{
+		if (counter == 0)
+			return;
+		if ((pid = waitpid(-1, &status, 0)) < 0)
+		{
+			counter--;
+			break;
+		}
+
+
+		int index = GetIndex(pid, p_number);
+		if (index != -1)
+		{
+			sprintf(buf, "Command %d finished with status %d\n", index, status);
+
+			write(fd, buf, strlen(buf));
+
+			counter--;
+		}
+	}
+	close(fd);
+}
 
 int flag;
 
@@ -49,7 +94,7 @@ void do_packet_loop(char* data[], int size)
 			char *comms[N];
 			char *buffer1[MAXCHAR*N]; for (int i = 0; i < MAXCHAR*N; i++) buffer1[i] = NULL;
 			sem_init(&sem, 0, 1);
-			fd = open("log.txt", O_CREAT | O_RDWR, S_IRWXU);
+
 			fd2 = open(data[1], O_CREAT | O_RDWR, S_IRWXU);
 			fd3 = open("results.txt", O_CREAT | O_RDWR, S_IRWXU);
 			read(fd2, buffer, 1024);
@@ -77,53 +122,25 @@ void do_packet_loop(char* data[], int size)
 				}
 				for (int k = 0; k < counter; k++) args[i][k] = buffer1[j - counter + k + 1];
 			}
-			char buf1[] = "Executed successfully\n";
-			char buf2[] = "\nFailure at command ";
-			char buf3[10];
 
-			pid_t pid2;
+
 			for (i = 0; i < p_number; ++i)
 			{
 				g_proc[i].pid = fork();
 
+
 				if (g_proc[i].pid == 0)
 				{
-					pid2 = fork();
-					if (pid2 == 0)
-					{
-						close(1);
-						dup2(fd3, 1);
-						if (execv(comms[i], args[i]) < 0)
-							exit(1);
-					}
-					else
-					{
-						int status;
-						wait(&status);
-						sem_wait(&sem);
-						if (WEXITSTATUS(status) != 1) {
-							write(fd, buf1, 22);
-						}
-						else {
-							write(fd, buf2, 19);
-							sprintf(buf3, "%d", i);
-							write(fd, buf3, 1);
-						}
-						sem_post(&sem);
-					}
-
-					exit(0);
+					close(1);
+					dup2(fd3, 1);
+					sem_wait(&sem);
+					execv(comms[i], args[i]);
+					exit(1);
 				}
-				else
-				{
-					int status2;
-					wait(&status2);
-				}
-
 			}
-			sem_destroy(&sem);
+			WaitForChildrenToTerminate(p_number);
+
 			flag = 0;
-			close(fd);
 			close(fd3);
 			break;
 		}
@@ -146,10 +163,17 @@ void fsignal(int sig)
 	case SIGUSR1:
 		flag = 1;
 		break;
+	case SIGCHLD:
+		sem_post(&sem);
+		break;
 	default:
 		break;
 	}
 }
+
+
+
+
 
 int main(int argc, char* argv[])
 {
@@ -159,5 +183,6 @@ int main(int argc, char* argv[])
 	setsid();
 	signal(SIGINT, fsignal);
 	signal(SIGUSR1, fsignal);
+	signal(SIGCHLD, fsignal);
 	do_packet_loop(argv, argc - 1);
 }
